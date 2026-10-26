@@ -1,0 +1,37 @@
+/target
+/trace/
+/sqware-diagnose.jsonl
+
+# 编辑器状态归本地：`docs/` 是一个 Obsidian 库，`.obsidian/` 里放的是库配置与**每个人的
+# 窗口布局**（`workspace.json` 每次打开都变）。收进来只会让每次 `git status` 都脏一次，
+# 与仓库要管的事实（文档本身）无关。文件仍在原地，只是不进库。
+docs/.obsidian/
+
+# 宿主侧分配器压测台（`crates/alloc-probe`）的本地 CARGO_HOME：`run.sh` 把依赖拉到这里
+# （沙箱里 `~/.cargo/registry` 只读），内容是 cargo registry 缓存 + 源码，1.5 MB 级。
+# 它是**缓存**不是源码：换台机器跑 `run.sh` 会自动重新拉。
+.cargo-home/
+# 那几台 crate 是**独立工作区**（被根 workspace `exclude`），故各自有一份 target——
+# 根上的 `/target` 只盖根目录那一份。
+#
+# **照实记（这一格栽过三次，每次都是同一个形状：新开一台编外 crate、忘了加一行）**：
+#   · `crates/alloc-probe` —— 第一次提交就漏（**114** 个构建产物被带进索引）；
+#   · `crates/protocol-case` + `crates/gate` —— 两道门上来时又漏一次（**703** 个）；
+#   · `crates/image` —— "initrd 与 kernel 何干"那一刀搬出来的新 crate，再漏一次（**351** 个）。
+#
+# 第三次之后不再列名字：**一条通配盖所有编外 crate**（根 `Cargo.toml` 的 `exclude` 列了谁，
+# 这里就盖谁）。
+#
+# **照实记（上一次那句"改成一条通配"其实是假的）**：那一版写的是 `crates/*-case/target/`
+# 与 `crates/gate/target/` 两行**字面量**，注释却写着"通配、以后新开一台不必再记着加"。
+# 下一台（`crates/image`）当场证明了它不是通配——故这一次写的是真通配。
+crates/*/target/
+
+__pycache__/
+
+programs/tests/*/target/
+kernel/tests/*/target/
+
+# 独立测试/fixture 工作区可能嵌在更深层（例如 crates/image/tests/fixtures/...、
+# tools/shuyra-image）；它们各自的 target 都是构建缓存，不随源码入库。
+**/target/
