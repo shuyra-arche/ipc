@@ -1,17 +1,17 @@
 # Twine · 纺
 
-Twine 是 Shuyra 的 `no_std` 通信库，使用 Kernel ABI v7 并适配
+Twine 是 Shuyra 的 `no_std` 通信库，使用 Kernel ABI v8 并适配
 [Weave](https://github.com/shuyra-arche/weave) 的完整帧接口。
 
 | 模块 | 职责 |
 | --- | --- |
 | `view::clone` | 有界消息、独立接收载荷及单次请求的回复授权 |
-| `view::share` | 同一地址空间的 SPSC 字节环 |
+| `view::share` | 本地和跨 Team 的 SPSC 字节环 |
 | `sign` | 就绪事件订阅、绝对截止时间等待及合并通知 |
 
 ## Clone 与 Sign
 
-用已授权的 Clone Pend 构造 `Sender` 或 `Receiver`。Kernel ABI v7
+用已授权的 Clone Pend 构造 `Sender` 或 `Receiver`。Kernel ABI v8
 要求消息非空。发送成功表示已入队。接收缓冲不足时，Kernel 保留队头；
 `peek` 只观察队头，另一个接收者仍可先行取走它。
 
@@ -44,9 +44,24 @@ Kernel 只允许同 Team 或符合直接创建者关系的 Task 之间授予。
 读写可以部分推进，环空或满时返回 `Pending`。写端关闭后读端排空返回
 `Eof`，读端关闭后写端返回 `BrokenPipe`。字节环的帧边界由使用者定义。
 
-当前 ABI 的 Share 写借用是独占的。授出只读分支会撤销父分支的写映射，
-因此这版字节环的两个端点必须处在同一个地址空间。跨隔离域的三个独立授权区
-需要 Kernel 能对同一页同时保留一个写端与一个只读端的映射。
+跨 Team 时，为数据、读游标、写游标分别分配清零的 RAM。两端以相同容量和各自
+Task 的 `Pages` 构造 `MappedReader` 或 `MappedWriter`。每个区域独立授权。
+
+| 区域 | 读端 | 写端 |
+| --- | --- | --- |
+| 数据 | 只读 | 读写 |
+| 读游标 | 读写 | 只读 |
+| 写游标 | 只读 | 读写 |
+
+授权方负责创建、分发和回收 Pend。映射端点会在每次操作开始时调用 Share
+Open，访问期间需要映射保持有效。应在端点停止访问后协调撤销。映射端点
+需要显式 `close`，析构时无需访问共享页。`MappingError::is_busy()` 表示
+Open 暂时受争用，环状态与本次字节进度均未改变，可以重试。
+
+为每端配置专用的接收 Sign 和对端的 Trigger Pend，用 `sign::Wake` 在
+推进或关闭后通知对端。收到直接通知后重试读写，通知失败与字节进度分别处理。
+有观察权限的一方可以在接收 Sign 上订阅对端的 Join，或订阅相关 Pend 的
+Inspect，在对端退出或授权失效时结束等待。`Eof` 表示写端已关闭且数据已排空。
 
 ## 构建与检查
 
@@ -62,5 +77,10 @@ cargo build --locked --target riscv64gc-unknown-none-elf
 cargo build --locked --release --target riscv64gc-unknown-none-elf
 ```
 
+有 ABI v8 的 Shuyra QEMU 启动镜像时，运行
+`python3 tests/target/share/run.py /path/to/shuyra`。这个测试在单 Hart 和四 Hart
+下启动两个独立 Team，覆盖满环背压、回绕、排空、等待期间的撤销及对端退出。
+可通过 `QEMU_RISCV64` 和 `QEMU_OPENSBI` 指定 QEMU 和固件。
+
 Twine 0.2 替换原 IPC 0.1 的接口，使用它的程序须重新编译并迁移到
-Kernel ABI v7。来源与归属见 [PROVENANCE.md](PROVENANCE.md)。
+Kernel ABI v8。来源与归属见 [PROVENANCE.md](PROVENANCE.md)。

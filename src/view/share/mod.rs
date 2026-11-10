@@ -1,6 +1,10 @@
-//! SPSC byte rings. The backing storage and both roles share one address space.
+//! SPSC byte rings over local storage or Kernel Share mappings.
 
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+mod mapping;
+
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+
+pub use mapping::{MappedReader, MappedWriter, MappingError, Pages};
 
 pub const MAX_CAPACITY: usize = 1024 * 1024;
 
@@ -26,26 +30,26 @@ pub enum Write {
     Pending,
 }
 
-#[repr(align(64))]
+#[repr(C, align(64))]
 struct Cursor {
     position: AtomicU64,
-    closed: AtomicBool,
+    closed: AtomicU64,
 }
 
 impl Cursor {
     const fn new() -> Self {
         Self {
             position: AtomicU64::new(0),
-            closed: AtomicBool::new(false),
+            closed: AtomicU64::new(0),
         }
     }
 
     fn closed(&self) -> bool {
-        self.closed.load(Ordering::Acquire)
+        self.closed.load(Ordering::Acquire) != 0
     }
 
     fn close(&self) {
-        self.closed.store(true, Ordering::Release);
+        self.closed.store(1, Ordering::Release);
     }
 }
 
@@ -59,9 +63,7 @@ pub struct Ring<'a> {
 
 impl<'a> Ring<'a> {
     pub fn new(bytes: &'a mut [AtomicU8]) -> Result<Self, Fail> {
-        if bytes.is_empty() || bytes.len() > MAX_CAPACITY {
-            return Err(Fail::InvalidCapacity);
-        }
+        validate_capacity(bytes.len())?;
         Ok(Self {
             read: Cursor::new(),
             write: Cursor::new(),
@@ -70,9 +72,30 @@ impl<'a> Ring<'a> {
     }
 
     pub fn split(&mut self) -> (Reader<'_>, Writer<'_>) {
-        (Reader { ring: self }, Writer { ring: self })
+        let parts = Parts {
+            read: &self.read,
+            write: &self.write,
+            bytes: self.bytes,
+        };
+        (Reader { parts }, Writer { parts })
     }
+}
 
+fn validate_capacity(capacity: usize) -> Result<(), Fail> {
+    if !(1..=MAX_CAPACITY).contains(&capacity) {
+        return Err(Fail::InvalidCapacity);
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct Parts<'a> {
+    read: &'a Cursor,
+    write: &'a Cursor,
+    bytes: &'a [AtomicU8],
+}
+
+impl Parts<'_> {
     fn available(&self, read: u64, write: u64) -> Result<usize, Fail> {
         write
             .checked_sub(read)
@@ -86,38 +109,67 @@ impl<'a> Ring<'a> {
         let start = (cursor % capacity as u64) as usize;
         &self.bytes[(start + offset) % capacity]
     }
-}
 
-pub struct Reader<'a> {
-    ring: &'a Ring<'a>,
-}
-
-impl Reader<'_> {
-    pub fn read(&mut self, out: &mut [u8]) -> Result<Read, Fail> {
-        let ring = self.ring;
-        if ring.read.closed() {
+    fn read(&self, out: &mut [u8]) -> Result<Read, Fail> {
+        if self.read.closed() {
             return Err(Fail::Closed);
         }
         if out.is_empty() {
             return Ok(Read::Bytes(0));
         }
-        let read = ring.read.position.load(Ordering::Relaxed);
+        let read = self.read.position.load(Ordering::Relaxed);
         // Load close first. Observing EOF must also observe the last write.
-        let closed = ring.write.closed();
-        let write = ring.write.position.load(Ordering::Acquire);
-        let n = out.len().min(ring.available(read, write)?);
+        let closed = self.write.closed();
+        let write = self.write.position.load(Ordering::Acquire);
+        let n = out.len().min(self.available(read, write)?);
         if n == 0 {
             return Ok(if closed { Read::Eof } else { Read::Pending });
         }
         for (offset, byte) in out[..n].iter_mut().enumerate() {
-            *byte = ring.at(read, offset).load(Ordering::Relaxed);
+            *byte = self.at(read, offset).load(Ordering::Relaxed);
         }
-        ring.read.position.store(read + n as u64, Ordering::Release);
+        self.read.position.store(read + n as u64, Ordering::Release);
         Ok(Read::Bytes(n))
     }
 
+    fn write(&self, input: &[u8]) -> Result<Write, Fail> {
+        if self.write.closed() {
+            return Err(Fail::Closed);
+        }
+        if self.read.closed() {
+            return Err(Fail::BrokenPipe);
+        }
+        if input.is_empty() {
+            return Ok(Write::Bytes(0));
+        }
+        let write = self.write.position.load(Ordering::Relaxed);
+        let read = self.read.position.load(Ordering::Acquire);
+        let n = input
+            .len()
+            .min(self.bytes.len() - self.available(read, write)?);
+        if n == 0 {
+            return Ok(Write::Pending);
+        }
+        let next = write.checked_add(n as u64).ok_or(Fail::Exhausted)?;
+        for (offset, &byte) in input[..n].iter().enumerate() {
+            self.at(write, offset).store(byte, Ordering::Relaxed);
+        }
+        self.write.position.store(next, Ordering::Release);
+        Ok(Write::Bytes(n))
+    }
+}
+
+pub struct Reader<'a> {
+    parts: Parts<'a>,
+}
+
+impl Reader<'_> {
+    pub fn read(&mut self, out: &mut [u8]) -> Result<Read, Fail> {
+        self.parts.read(out)
+    }
+
     pub fn close(&mut self) {
-        self.ring.read.close();
+        self.parts.read.close();
     }
 }
 
@@ -128,39 +180,16 @@ impl Drop for Reader<'_> {
 }
 
 pub struct Writer<'a> {
-    ring: &'a Ring<'a>,
+    parts: Parts<'a>,
 }
 
 impl Writer<'_> {
     pub fn write(&mut self, input: &[u8]) -> Result<Write, Fail> {
-        let ring = self.ring;
-        if ring.write.closed() {
-            return Err(Fail::Closed);
-        }
-        if ring.read.closed() {
-            return Err(Fail::BrokenPipe);
-        }
-        if input.is_empty() {
-            return Ok(Write::Bytes(0));
-        }
-        let write = ring.write.position.load(Ordering::Relaxed);
-        let read = ring.read.position.load(Ordering::Acquire);
-        let n = input
-            .len()
-            .min(ring.bytes.len() - ring.available(read, write)?);
-        if n == 0 {
-            return Ok(Write::Pending);
-        }
-        let next = write.checked_add(n as u64).ok_or(Fail::Exhausted)?;
-        for (offset, &byte) in input[..n].iter().enumerate() {
-            ring.at(write, offset).store(byte, Ordering::Relaxed);
-        }
-        ring.write.position.store(next, Ordering::Release);
-        Ok(Write::Bytes(n))
+        self.parts.write(input)
     }
 
     pub fn close(&mut self) {
-        self.ring.write.close();
+        self.parts.write.close();
     }
 }
 

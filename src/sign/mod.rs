@@ -1,5 +1,9 @@
 //! Dedicated Sign watches and coalesced direct wakeups.
 
+mod wake;
+
+pub use wake::Wake;
+
 use core::marker::PhantomData;
 
 use erra::Error;
