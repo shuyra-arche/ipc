@@ -9,39 +9,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 
 [[package]]
-name = "env"
-version = "0.1.0"
-source = "git+https://github.com/shuyra-arche/env.git?rev=d3000253cd5d13d466e91fafd4dbb27a5ec5aaae#d3000253cd5d13d466e91fafd4dbb27a5ec5aaae"
-dependencies = [
- "bitflags",
- "erra",
- "mold",
- "wire",
-]
-
-[[package]]
 name = "erra"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc36b9bc9f9fd011eb63c44cdba19d47c4e77f4759cddb0c448b1d23d27abc1e"
 
 [[package]]
-name = "ipc"
-version = "0.1.0"
+name = "kernel-api"
+version = "0.0.1"
+source = "git+https://github.com/shuyra-arche/kernel.git?rev=f8fc37207c909044e55c190a8af1b3e2435a377d#f8fc37207c909044e55c190a8af1b3e2435a377d"
 dependencies = [
- "env",
- "resource",
- "wire",
+ "bitflags",
+ "erra",
+ "kernel-api-macros",
 ]
 
 [[package]]
-name = "mold"
-version = "0.1.0"
-source = "git+https://github.com/shuyra-arche/mold.git?rev=f52501f4c91b686eded8b4bcd743b4e96084b7f9#f52501f4c91b686eded8b4bcd743b4e96084b7f9"
+name = "kernel-api-macros"
+version = "0.0.1"
+source = "git+https://github.com/shuyra-arche/kernel.git?rev=f8fc37207c909044e55c190a8af1b3e2435a377d#f8fc37207c909044e55c190a8af1b3e2435a377d"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "kernel-client"
+version = "0.0.1"
+source = "git+https://github.com/shuyra-arche/kernel.git?rev=f8fc37207c909044e55c190a8af1b3e2435a377d#f8fc37207c909044e55c190a8af1b3e2435a377d"
+dependencies = [
+ "erra",
+ "kernel-api",
 ]
 
 [[package]]
@@ -63,15 +62,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "resource"
-version = "0.1.0"
-source = "git+https://github.com/shuyra-arche/resource.git?rev=dbc96834f50f094b5c386e54a0a2ae5560dcd7f8#dbc96834f50f094b5c386e54a0a2ae5560dcd7f8"
-dependencies = [
- "env",
- "erra",
-]
-
-[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -83,12 +73,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "twine"
+version = "0.2.0"
+dependencies = [
+ "erra",
+ "kernel-api",
+ "kernel-client",
+ "weave",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 
 [[package]]
-name = "wire"
-version = "0.1.0"
-source = "git+https://github.com/shuyra-arche/wire.git?rev=0ff77dc4573fa2620d2fe995a18c01949d9c7e57#0ff77dc4573fa2620d2fe995a18c01949d9c7e57"
+name = "weave"
+version = "0.0.1"
+source = "git+https://github.com/shuyra-arche/weave.git?rev=7a7d67fb3f190aeb43049d051b0972bcd53213bc#7a7d67fb3f190aeb43049d051b0972bcd53213bc"

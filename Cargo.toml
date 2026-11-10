@@ -1,10 +1,8 @@
 [package]
-name = "ipc"
-version = "0.1.0"
+name = "twine"
+version = "0.2.0"
 edition = "2024"
-
-[workspace]
-resolver = "3"
+publish = false
 
 [lib]
 test = false
@@ -12,6 +10,7 @@ bench = false
 doctest = false
 
 [dependencies]
-env = { git = "https://github.com/shuyra-arche/env.git", rev = "d3000253cd5d13d466e91fafd4dbb27a5ec5aaae" }
-wire = { git = "https://github.com/shuyra-arche/wire.git", rev = "0ff77dc4573fa2620d2fe995a18c01949d9c7e57" }
-resource = { git = "https://github.com/shuyra-arche/resource.git", rev = "dbc96834f50f094b5c386e54a0a2ae5560dcd7f8" }
+erra = { version = "0.2.0", default-features = false }
+kernel-api = { git = "https://github.com/shuyra-arche/kernel.git", rev = "f8fc37207c909044e55c190a8af1b3e2435a377d" }
+kernel-client = { git = "https://github.com/shuyra-arche/kernel.git", rev = "f8fc37207c909044e55c190a8af1b3e2435a377d" }
+weave = { git = "https://github.com/shuyra-arche/weave.git", rev = "7a7d67fb3f190aeb43049d051b0972bcd53213bc", default-features = false }

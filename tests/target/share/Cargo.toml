@@ -1,0 +1,19 @@
+[package]
+name = "twine-share-guest"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "twine-share-guest"
+path = "main.rs"
+
+[dependencies]
+twine = { path = "../../.." }
+kernel-api = { git = "https://github.com/shuyra-arche/kernel.git", rev = "f8fc37207c909044e55c190a8af1b3e2435a377d" }
+kernel-client = { git = "https://github.com/shuyra-arche/kernel.git", rev = "f8fc37207c909044e55c190a8af1b3e2435a377d" }
+
+[profile.release]
+panic = "abort"

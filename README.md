@@ -1,32 +1,86 @@
-# ipc
+# Twine · 纺
 
-Shuyra 的 `no_std` IPC 机制库，提供会话建立与交换、请求回复、共享环与时间边界。
+Twine 是 Shuyra 的 `no_std` 通信库，使用 Kernel ABI v8 并适配
+[Weave](https://github.com/shuyra-arche/weave) 的完整帧接口。
 
-- `src/session/`：会话状态、建立和交换。
-- `src/hand/`、`src/rpc.rs`：收发与 RPC。
-- `src/rack/`：共享环、读写端与门铃。
-- `src/time.rs`：可注入 Clock、截止时间与剩余时间。
-- `tests/host`、`tests/session-establish`、`tests/session-exchange`、
-  `tests/rack-reader-host`：独立宿主测试工作区。
+| 模块 | 职责 |
+| --- | --- |
+| `view::clone` | 有界消息、独立接收载荷及单次请求的回复授权 |
+| `view::share` | 本地和跨 Team 的 SPSC 字节环 |
+| `sign` | 就绪事件订阅、绝对截止时间等待及合并通知 |
 
-Native 时钟不支持宿主运行；测试使用注入时钟，Native 宿主检查仅验证签名与类型。
-会话超时后关闭的行为由交换测试验证，不能以宿主 fake 后端替代原生资源生命周期验证。
+## Clone 与 Sign
 
-## 工具链与维护
+用已授权的 Clone Pend 构造 `Sender` 或 `Receiver`。Kernel ABI v8
+要求消息非空。发送成功表示已入队。接收缓冲不足时，Kernel 保留队头；
+`peek` 只观察队头，另一个接收者仍可先行取走它。
 
-使用 `rust-toolchain.toml` 固定的 `nightly-2026-09-04`，首次运行需要 Rustup
-下载工具链及 RV64 目标。依赖版本以 Cargo 清单和锁文件为准。
-下列命令从仓库根目录执行；宿主测试不代表真实内核运行验证。
+直接使用 `pull` 时，调用方负责 `Payload::finish`。载荷可以在原队列关闭后
+读取。`Payload::copy` 在操作内访问映射，`shut` 提前关闭映射，
+`finish` 归还 Pend 并关闭剩余映射。清理失败返回仍可重试的对象。
+Weave 的 `FrameReceiver` 适配器在 Open 返回 `Busy` 时保留已出队载荷，
+下一次接收优先处理该载荷。复制完成即交付帧。回收失败时，适配器保留
+待归还的 Pend，在下次 Pull 前重试，也可显式调用 `settle`。析构只尝试
+一次清理。需要观察结果的调用方须显式结束资源。
+
+用 `sign::Watch` 订阅 Clone 的 `source()`，其中 Clone Pend 需要
+`PEEK`。使用 Kernel 的 `Wait::At` 传入绝对单调纳秒。唤醒后应重新尝试
+实际操作。Push 就绪只表示队列还有空间，未承诺能放入任意长度的帧。
+
+## 请求与回复
+
+请求方用 `Reply::create` 创建单次回复队列，调用 `grant` 先授予服务 Task
+不可再分发的 Push 权限，再将返回的服务本地 Pend 编号编码进请求。
+Kernel 只允许同 Team 或符合直接创建者关系的 Task 之间授予。
+服务方用 `Sender::reply` 将编号与 Clone 返回的可信发送者身份核对，
+再将该 Sender 交给 Weave 的回复路由。请求方的 `Reply` 实现
+`ReplyReceiver`，验证 Kernel 报告的回复来源，只接受一次成功回复。
+请求完成、失败或超时后都应调用 `Reply::finish`，失败时可以重试清理。
+等待超时只结束本次等待，服务可能已执行请求。
+
+## Share 字节环
+
+`Ring::new` 接受调用方的原子字节存储，`split` 提供唯一的读端和写端。
+读写可以部分推进，环空或满时返回 `Pending`。写端关闭后读端排空返回
+`Eof`，读端关闭后写端返回 `BrokenPipe`。字节环的帧边界由使用者定义。
+
+跨 Team 时，为数据、读游标、写游标分别分配清零的 RAM。两端以相同容量和各自
+Task 的 `Pages` 构造 `MappedReader` 或 `MappedWriter`。每个区域独立授权。
+
+| 区域 | 读端 | 写端 |
+| --- | --- | --- |
+| 数据 | 只读 | 读写 |
+| 读游标 | 读写 | 只读 |
+| 写游标 | 只读 | 读写 |
+
+授权方负责创建、分发和回收 Pend。映射端点会在每次操作开始时调用 Share
+Open，访问期间需要映射保持有效。应在端点停止访问后协调撤销。映射端点
+需要显式 `close`，析构时无需访问共享页。`MappingError::is_busy()` 表示
+Open 暂时受争用，环状态与本次字节进度均未改变，可以重试。
+
+为每端配置专用的接收 Sign 和对端的 Trigger Pend，用 `sign::Wake` 在
+推进或关闭后通知对端。收到直接通知后重试读写，通知失败与字节进度分别处理。
+有观察权限的一方可以在接收 Sign 上订阅对端的 Join，或订阅相关 Pend 的
+Inspect，在对端退出或授权失效时结束等待。`Eof` 表示写端已关闭且数据已排空。
+
+## 构建与检查
+
+仓库固定 Rust 1.99.0，保留 `Cargo.lock` 以复现验证。依赖按完整 Git 提交
+固定。宿主测试运行字节环，RV64 构建检查目标兼容性。原生 Clone 和 Sign
+通过 Kernel Client 调用，需要在 Shuyra 的 Task 中运行。
 
 ```sh
-cargo build --lib --locked --target riscv64gc-unknown-none-elf
-cargo test --locked --manifest-path tests/host/Cargo.toml --target x86_64-unknown-linux-gnu
-cargo test --locked --manifest-path tests/session-exchange/Cargo.toml --target x86_64-unknown-linux-gnu
-cargo test --locked --manifest-path tests/session-establish/Cargo.toml --target x86_64-unknown-linux-gnu
-cargo test --locked --manifest-path tests/rack-reader-host/Cargo.toml --target x86_64-unknown-linux-gnu
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --target x86_64-unknown-linux-gnu
+cargo build --locked --target riscv64gc-unknown-none-elf
+cargo build --locked --release --target riscv64gc-unknown-none-elf
 ```
 
-## 贡献与来源
+有 ABI v8 的 Shuyra QEMU 启动镜像时，运行
+`python3 tests/target/share/run.py /path/to/shuyra`。这个测试在单 Hart 和四 Hart
+下启动两个独立 Team，覆盖满环背压、回绕、排空、等待期间的撤销及对端退出。
+可通过 `QEMU_RISCV64` 和 `QEMU_OPENSBI` 指定 QEMU 和固件。
 
-维护与 PR 规则见 [Shuyra 贡献规范](https://github.com/shuyra-arche/vanllia/blob/main/CONTRIBUTING.md)。
-来源、作者与许可情况见 [PROVENANCE.md](PROVENANCE.md)。
+Twine 0.2 替换原 IPC 0.1 的接口，使用它的程序须重新编译并迁移到
+Kernel ABI v8。来源与归属见 [PROVENANCE.md](PROVENANCE.md)。
