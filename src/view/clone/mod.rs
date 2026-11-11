@@ -128,7 +128,10 @@ impl Receiver {
         Ok(())
     }
 
-    fn discard(&mut self) -> Result<(), ReceiveError> {
+    /// Return a retained delivery without pulling or dispatching another frame.
+    /// Use when abandoning a receive after Open Busy, or shutting down a service.
+    /// Failure retains the delivery for retry. The borrowed queue stays open.
+    pub fn discard(&mut self) -> Result<(), ReceiveError> {
         if let Some(payload) = self.pending.as_mut() {
             payload.retire()?;
             self.pending = None;

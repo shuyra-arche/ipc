@@ -21,7 +21,9 @@ Twine 是 Shuyra 的 `no_std` 通信库，使用 Kernel ABI v9 并适配
 Weave 的 `FrameReceiver` 适配器在 Open 返回 `Busy` 时保留已出队载荷，
 下一次接收优先处理该载荷。复制完成即交付帧。回收失败时，适配器保留
 待归还的 Pend，在下次 Pull 前重试，也可显式调用 `settle`。析构只尝试
-一次清理。需要观察结果的调用方须显式结束资源。
+一次清理。放弃尚未映射的载荷或停止服务时，调用 `discard` 归还适配器持有的
+载荷，失败后可重试。它不会接收下一帧，也不会关闭借用的队列。
+需要观察结果的调用方须显式结束资源。
 
 用 `sign::Watch` 订阅 Clone 的 `source()`，其中 Clone Pend 需要
 `PEEK`。使用 Kernel 的 `Wait::At` 传入绝对单调纳秒。唤醒后应重新尝试
