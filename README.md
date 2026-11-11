@@ -1,6 +1,6 @@
 # Twine · 纺
 
-Twine 是 Shuyra 的 `no_std` 通信库，使用 Kernel ABI v8 并适配
+Twine 是 Shuyra 的 `no_std` 通信库，使用 Kernel ABI v9 并适配
 [Weave](https://github.com/shuyra-arche/weave) 的完整帧接口。
 
 | 模块 | 职责 |
@@ -11,7 +11,7 @@ Twine 是 Shuyra 的 `no_std` 通信库，使用 Kernel ABI v8 并适配
 
 ## Clone 与 Sign
 
-用已授权的 Clone Pend 构造 `Sender` 或 `Receiver`。Kernel ABI v8
+用已授权的 Clone Pend 构造 `Sender` 或 `Receiver`。Kernel ABI v9
 要求消息非空。发送成功表示已入队。接收缓冲不足时，Kernel 保留队头；
 `peek` 只观察队头，另一个接收者仍可先行取走它。
 
@@ -77,10 +77,10 @@ cargo build --locked --target riscv64gc-unknown-none-elf
 cargo build --locked --release --target riscv64gc-unknown-none-elf
 ```
 
-有 ABI v8 的 Shuyra QEMU 启动镜像时，运行
+有 ABI v9 的 Shuyra QEMU 启动镜像时，运行
 `python3 tests/target/share/run.py /path/to/shuyra`。这个测试在单 Hart 和四 Hart
 下启动两个独立 Team，覆盖满环背压、回绕、排空、等待期间的撤销及对端退出。
 可通过 `QEMU_RISCV64` 和 `QEMU_OPENSBI` 指定 QEMU 和固件。
 
 Twine 0.2 替换原 IPC 0.1 的接口，使用它的程序须重新编译并迁移到
-Kernel ABI v8。来源与归属见 [PROVENANCE.md](PROVENANCE.md)。
+Kernel ABI v9。来源与归属见 [PROVENANCE.md](PROVENANCE.md)。

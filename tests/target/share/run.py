@@ -1,4 +1,4 @@
-"""Boot the Twine integration guest with a built Shuyra ABI 8 QEMU image."""
+"""Boot the Twine integration guest with a built Shuyra ABI 9 QEMU image."""
 
 import argparse
 import os
@@ -21,7 +21,7 @@ def initrd(elf: bytes) -> bytes:
     assert kind == 1 and flags == 5 and length == size and address % PAGE == 0
     pages = (size + PAGE - 1) // PAGE
     total = (1 + pages) * PAGE
-    header = struct.pack("<8sHBBIQQ", b"SQBOOT01", 2, 12, 8, 1, entry, total)
+    header = struct.pack("<8sHBBIQQ", b"SQBOOT01", 2, 12, 9, 1, entry, total)
     region = struct.pack("<QQQQQ", address, pages, pages, PAGE, 5)
     return (
         struct.pack("<II", PAGE, total).ljust(PAGE, b"\0")
