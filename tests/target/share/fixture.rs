@@ -4,7 +4,7 @@ use kernel_api::{
     model::{
         cell::{
             Allocation, CellCreate, CellInfo, CellObject, CellPosition, CellSource, CreatedCell,
-            MappingControl, MappingTarget, MemoDestination, Placement, SlotId,
+            MemoDestination, Placement, SlotId,
         },
         identity::{Mark, PendId, TaskId, TeamId},
         modifiable::Modifiable,
@@ -214,10 +214,9 @@ impl Code {
                 team,
                 placement: Placement::exact(self.start, PAGE_SIZE).unwrap(),
                 access: 10,
-                control: MappingControl::Caller,
             },
         };
-        let CreatedCell::Memo { mapping, address } =
+        let CreatedCell::Memo { token, address } =
             cell::create(PendId::NONE, addr(&request.to_bytes())).unwrap()
         else {
             panic!("expected code mapping")
@@ -225,10 +224,7 @@ impl Code {
         assert_eq!(address, self.start);
         for page in 0..self.pages {
             let mut position = CellPosition {
-                object: CellObject::Memo {
-                    target: MappingTarget::Cpu(team),
-                    mapping,
-                },
+                object: CellObject::Memo(token),
                 page,
                 generation: 0,
             };
