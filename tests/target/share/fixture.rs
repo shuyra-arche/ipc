@@ -1,25 +1,25 @@
 use core::{fmt, ptr};
 use kernel_api::{
-    address::{PAGE_SIZE, VirtAddr},
+    address::{PAGE_SIZE, PageCount, VirtAddr},
     model::{
         cell::{
-            Allocation, CellCreate, CellInfo, CellObject, CellPosition, CellSource, CreatedCell,
-            MemoDestination, Placement, SlotId,
+            Allocation, CellAssociation, CellInfo, CellLevel, CellObject, CellPosition, Placement,
+            SlotId,
         },
         identity::{Mark, PendId, TaskId, TeamId},
         modifiable::Modifiable,
         pend::{
             AccordRequest, AccordTarget, Distributable, Limits, NarrowRequest, Operations,
-            PendInfo, PendRange, Target,
+            PendInfo, PendRange, PendScope, Target,
         },
         unit::{
-            ControlId, ExitScope, ProgramKind, UnitCreate, UnitInfo, UnitQuery, UnitState,
+            ControlId, CreatedUnit, ExitScope, UnitCreate, UnitInfo, UnitQuery, UnitState,
             UnitTarget,
         },
         wait::Wait,
     },
 };
-use kernel_client::call::{cell, debug, pend, room, share_view, unit};
+use kernel_client::call::{cell, debug, nest, pend, room, share_view, unit};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -60,7 +60,7 @@ pub fn exit(value: u64) -> ! {
     unit::exit(value, 0, VirtAddr::new(0), 0, ExitScope::Task)
 }
 
-fn addr(bytes: &[u8]) -> VirtAddr {
+pub fn addr(bytes: &[u8]) -> VirtAddr {
     VirtAddr::new(bytes.as_ptr() as usize)
 }
 
@@ -99,22 +99,25 @@ pub fn grant(
             operations,
             modifiable,
             distributable: Distributable::No,
-            range: PendRange::Inherit,
+            scope: match operations {
+                Operations::Share(_) => PendScope::Pages(PendRange::Inherit),
+                _ => PendScope::Object,
+            },
         },
     };
     pend::accord(addr(&request.to_bytes())).unwrap()
 }
 
 pub fn allocate(license: PendId, count: usize) -> SlotId {
-    let request = CellCreate::Slot(Allocation::new(count * PAGE_SIZE, PAGE_SIZE).unwrap());
-    let CreatedCell::Slot(slot) = cell::create(license, addr(&request.to_bytes())).unwrap() else {
-        panic!("expected Slot")
-    };
-    slot
+    cell::create(
+        license,
+        Allocation::new(count * PAGE_SIZE, PAGE_SIZE).unwrap(),
+    )
+    .unwrap()
 }
 
 pub fn delete_slot(slot: SlotId) {
-    cell::delete(addr(&CellObject::Slot(slot).to_bytes())).unwrap();
+    cell::delete(slot).unwrap();
 }
 
 pub fn inspect(query: UnitQuery) -> UnitInfo {
@@ -139,13 +142,15 @@ pub fn retry<E: core::fmt::Debug>(mut operation: impl FnMut() -> Result<(), E>) 
     }
 }
 
-pub fn reap(target: UnitTarget, team: TeamId) {
+pub fn reap(target: UnitTarget, team: TeamId, whole: PendId, mapping: PendId) {
     let end = end_time();
     while !inspect(UnitQuery::Target(target)).reclaimed {
         assert!(room::clock() < end, "Task reclamation stalled");
         room::yield_();
     }
     unit::delete(target).unwrap();
+    retry(|| pend::return_(mapping));
+    retry(|| pend::return_(whole));
     unit::finish(team).unwrap();
     retry(|| unit::delete(UnitTarget::Team(team)));
 }
@@ -194,37 +199,43 @@ impl Code {
         &self,
         mode: Mode,
         entry: extern "C" fn(usize, usize) -> !,
-    ) -> (TeamId, UnitTarget) {
+    ) -> (TeamId, UnitTarget, PendId, PendId) {
+        self.spawn_args(entry, &[mode as usize])
+    }
+
+    pub fn spawn_args(
+        &self,
+        entry: extern "C" fn(usize, usize) -> !,
+        args: &[usize],
+    ) -> (TeamId, UnitTarget, PendId, PendId) {
         let create = UnitCreate::Team {
             member_exit: false,
             nest: None,
-            kind: ProgramKind::User,
             guard: ControlId::NONE,
         };
-        let UnitTarget::Team(team) = unit::create(addr(&create.to_bytes())).unwrap() else {
+        let CreatedUnit::Team { team, nest: whole } =
+            unit::create(addr(&create.to_bytes())).unwrap()
+        else {
             panic!("expected Team")
         };
-        let request = CellCreate::Memo {
-            source: CellSource::Pend {
-                token: self.token,
-                offset: 0,
-                count: self.pages,
-            },
-            destination: MemoDestination::Internal {
-                team,
-                placement: Placement::exact(self.start, PAGE_SIZE).unwrap(),
-                access: 10,
-            },
+        let request = kernel_api::model::nest::ReserveRequest {
+            placement: Placement::exact(self.start, PAGE_SIZE).unwrap(),
+            count: PageCount::new(self.pages).unwrap(),
+            level: CellLevel::BASE,
+            access: 10,
         };
-        let CreatedCell::Memo { token, address } =
-            cell::create(PendId::NONE, addr(&request.to_bytes())).unwrap()
-        else {
-            panic!("expected code mapping")
-        };
+        let (token, address) = nest::reserve(
+            whole,
+            request.placement,
+            request.count,
+            request.level,
+            request.access,
+        )
+        .unwrap();
         assert_eq!(address, self.start);
         for page in 0..self.pages {
             let mut position = CellPosition {
-                object: CellObject::Memo(token),
+                object: CellObject::Pend(token),
                 page,
                 generation: 0,
             };
@@ -235,17 +246,37 @@ impl Code {
             )
             .unwrap();
             position.generation = CellInfo::from_bytes(&info).unwrap().generation;
+            cell::insert(addr(
+                &CellAssociation {
+                    source: CellPosition {
+                        object: CellObject::Pend(self.token),
+                        page,
+                        generation: 0,
+                    },
+                    target: position,
+                }
+                .to_bytes(),
+            ))
+            .unwrap();
+            cell::inspect(
+                addr(&position.to_bytes()),
+                VirtAddr::new(info.as_mut_ptr() as usize),
+            )
+            .unwrap();
+            position.generation = CellInfo::from_bytes(&info).unwrap().generation;
             cell::publish(addr(&position.to_bytes())).unwrap();
         }
-        let args = [mode as usize];
         let request = UnitCreate::Task {
             team: Some(team),
             entry: VirtAddr::new(entry as *const () as usize),
             args: VirtAddr::new(args.as_ptr() as usize),
-            count: 1,
+            count: args.len() as u64,
             stack: VirtAddr::new(0),
         };
-        (team, unit::create(addr(&request.to_bytes())).unwrap())
+        let CreatedUnit::Task(task) = unit::create(addr(&request.to_bytes())).unwrap() else {
+            panic!("expected Task")
+        };
+        (team, UnitTarget::Task(task), whole, token)
     }
 
     pub fn finish(self) {

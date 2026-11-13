@@ -1,6 +1,6 @@
 [package]
 name = "twine"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 publish = false
 
@@ -11,6 +11,6 @@ doctest = false
 
 [dependencies]
 erra = { version = "0.2.0", default-features = false }
-kernel-api = { git = "https://github.com/shuyra-arche/kernel.git", rev = "23dec6b30e1ec08f42d3701e2613acd8c562c459" }
-kernel-client = { git = "https://github.com/shuyra-arche/kernel.git", rev = "23dec6b30e1ec08f42d3701e2613acd8c562c459" }
+kernel-api = { git = "https://github.com/shuyra-arche/kernel.git", rev = "6d78ff68b95602deac2480a5addf7e693fd88fcc" }
+kernel-client = { git = "https://github.com/shuyra-arche/kernel.git", rev = "6d78ff68b95602deac2480a5addf7e693fd88fcc" }
 weave = { git = "https://github.com/shuyra-arche/weave.git", rev = "7a7d67fb3f190aeb43049d051b0972bcd53213bc", default-features = false }

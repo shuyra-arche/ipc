@@ -10,7 +10,7 @@ use kernel_api::{
         modifiable::Modifiable,
         pend::{
             AccordRequest, AccordTarget, CloneRights, Distributable, Limits, Operations, PendInfo,
-            PendRange, PendStatus,
+            PendScope, PendStatus,
         },
         sign::SignSource,
     },
@@ -24,7 +24,7 @@ const PUSH: Limits = Limits {
     operations: Operations::Clone(CloneRights::PUSH),
     modifiable: Modifiable::Yes,
     distributable: Distributable::No,
-    range: PendRange::Inherit,
+    scope: PendScope::Object,
 };
 
 #[derive(Debug)]

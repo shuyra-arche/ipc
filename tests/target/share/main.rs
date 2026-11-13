@@ -55,7 +55,7 @@ extern "C" fn start() -> ! {
 }
 
 fn run(license: PendId, code: &fixture::Code, mode: Mode) {
-    let (team, target) = code.spawn(mode, reader);
+    let (team, target, whole, mapping) = code.spawn(mode, reader);
     let UnitTarget::Task(task) = target else {
         unreachable!();
     };
@@ -138,7 +138,7 @@ fn run(license: PendId, code: &fixture::Code, mode: Mode) {
         assert_eq!(ring(|| writer.write(b"h")).unwrap(), Write::Pending);
     }
 
-    fixture::reap(target, team);
+    fixture::reap(target, team, whole, mapping);
     for token in [incoming, outgoing] {
         sign::delete(token).unwrap();
         retry(|| pend::return_(token));
