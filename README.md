@@ -1,6 +1,6 @@
 # Twine · 纺
 
-Twine 是 Shuyra 的 `no_std` 通信库，使用 Kernel ABI v9 并适配
+Twine 是 Shuyra 的 `no_std` 通信库，使用 Kernel ABI v10 并适配
 [Weave](https://github.com/shuyra-arche/weave) 的完整帧接口。
 
 | 模块 | 职责 |
@@ -11,7 +11,7 @@ Twine 是 Shuyra 的 `no_std` 通信库，使用 Kernel ABI v9 并适配
 
 ## Clone 与 Sign
 
-用已授权的 Clone Pend 构造 `Sender` 或 `Receiver`。Kernel ABI v9
+用已授权的 Clone Pend 构造 `Sender` 或 `Receiver`。Kernel ABI v10
 要求消息非空。发送成功表示已入队。接收缓冲不足时，Kernel 保留队头；
 `peek` 只观察队头，另一个接收者仍可先行取走它。
 
@@ -33,7 +33,11 @@ Weave 的 `FrameReceiver` 适配器在 Open 返回 `Busy` 时保留已出队载�
 
 请求方用 `Reply::create` 创建单次回复队列，调用 `grant` 先授予服务 Task
 不可再分发的 Push 权限，再将返回的服务本地 Pend 编号编码进请求。
-Kernel 只允许同 Team 或符合直接创建者关系的 Task 之间授予。
+Kernel 按活授权谱系检查委托，不要求双方同 Team 或有直接创建者关系；
+未运行的 Dormant Task 也能接收初始授权。每个接收 Task 的外来登记上限为 256，
+其中同一发送 Task 最多 32、同一发送 Team 合计最多 128；总登记上限为 1024，
+含准备中的登记。超额返回 OutOfMemory，Busy 可在有界期限内重试。
+接收方 Return、来源撤销或退出在清理结清后释放额度。资源委托不授予执行管理权。
 服务方用 `Sender::reply` 将编号与 Clone 返回的可信发送者身份核对，
 再将该 Sender 交给 Weave 的回复路由。请求方的 `Reply` 实现
 `ReplyReceiver`，验证 Kernel 报告的回复来源，只接受一次成功回复。
@@ -65,6 +69,9 @@ Open 暂时受争用，环状态与本次字节进度均未改变，可以重试
 有观察权限的一方可以在接收 Sign 上订阅对端的 Join，或订阅相关 Pend 的
 Inspect，在对端退出或授权失效时结束等待。`Eof` 表示写端已关闭且数据已排空。
 
+本版本固定 Kernel/API/Client `6d78ff68b95602deac2480a5addf7e693fd88fcc`；
+跨 Team 委托需要该修订或兼容后继，不能仅替换旧运行镜像的依赖针脚。
+
 ## 构建与检查
 
 仓库固定 Rust 1.99.0，保留 `Cargo.lock` 以复现验证。依赖按完整 Git 提交
@@ -79,10 +86,10 @@ cargo build --locked --target riscv64gc-unknown-none-elf
 cargo build --locked --release --target riscv64gc-unknown-none-elf
 ```
 
-有 ABI v9 的 Shuyra QEMU 启动镜像时，运行
+有 ABI v10 的 Shuyra QEMU 启动镜像时，运行
 `python3 tests/target/share/run.py /path/to/shuyra`。这个测试在单 Hart 和四 Hart
 下启动两个独立 Team，覆盖满环背压、回绕、排空、等待期间的撤销及对端退出。
 可通过 `QEMU_RISCV64` 和 `QEMU_OPENSBI` 指定 QEMU 和固件。
 
-Twine 0.2 替换原 IPC 0.1 的接口，使用它的程序须重新编译并迁移到
-Kernel ABI v9。来源与归属见 [PROVENANCE.md](PROVENANCE.md)。
+Twine 0.3 从 Twine 0.2 / Kernel ABI v9 迁移到 ABI v10，使用它的程序须重新编译并迁移到
+Kernel ABI v10。来源与归属见 [PROVENANCE.md](PROVENANCE.md)。
