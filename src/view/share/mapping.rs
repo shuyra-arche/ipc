@@ -1,14 +1,11 @@
-//! Task-local endpoints over three independently authorized Share regions.
-
-use core::{marker::PhantomData, ptr, slice, sync::atomic::AtomicU8};
-
-use erra::Error;
-use kernel_api::{abi::call::share_view::ShareFail, model::identity::PendId};
-use kernel_client::call::share_view;
+//! Task-local ring endpoints with independently authorized native publications.
 
 use super::{Cursor, Fail, Parts, Read, Write, validate_capacity};
+use crate::view::memory::{Mapping, MappingError as MemoryError, Memory};
+use core::{ptr, slice, sync::atomic::AtomicU8};
+use kernel_api::model::identity::PendId;
 
-/// The current Task's grants for the ring's data and two cursor regions.
+/// Share source Pends, each with ASSOCIATE and the required write ceiling.
 #[derive(Clone, Copy, Debug)]
 pub struct Pages {
     pub data: PendId,
@@ -19,45 +16,52 @@ pub struct Pages {
 #[derive(Debug)]
 pub enum MappingError {
     Ring(Fail),
-    Open {
-        token: PendId,
-        error: Error<ShareFail>,
-    },
+    Access { token: PendId, error: MemoryError },
     InvalidMapping,
 }
 
 impl MappingError {
-    /// Open was contended. The operation can be retried without losing progress.
+    /// A rejected Busy or an accepted Pending can be retried with this endpoint.
     pub fn is_busy(&self) -> bool {
-        matches!(self, Self::Open { error, .. } if error.source.is_busy())
+        matches!(self, Self::Access { error, .. } if error.is_busy())
     }
 }
 
-struct Mapped {
+struct Mapped<M: Memory> {
+    memory: M,
     pages: Pages,
+    data: Mapping,
+    read: Mapping,
+    write: Mapping,
     capacity: usize,
-    task: PhantomData<*mut ()>,
 }
 
-impl Mapped {
-    fn new(pages: Pages, capacity: usize) -> Result<Self, MappingError> {
+impl<M: Memory> Mapped<M> {
+    fn new(memory: M, pages: Pages, capacity: usize, writer: bool) -> Result<Self, MappingError> {
         validate_capacity(capacity).map_err(MappingError::Ring)?;
         if pages.data == pages.read || pages.data == pages.write || pages.read == pages.write {
             return Err(MappingError::InvalidMapping);
         }
+        let create = |token, bytes, writable| {
+            Mapping::new(token, bytes, writable)
+                .map_err(|error| MappingError::Access { token, error })
+        };
         Ok(Self {
+            memory,
             pages,
             capacity,
-            task: PhantomData,
+            data: create(pages.data, capacity, writer)?,
+            read: create(pages.read, size_of::<Cursor>(), !writer)?,
+            write: create(pages.write, size_of::<Cursor>(), writer)?,
         })
     }
 
-    fn parts(&self) -> Result<Parts<'_>, MappingError> {
-        let data = address::<AtomicU8>(self.pages.data, self.capacity)?;
-        let read = address::<Cursor>(self.pages.read, size_of::<Cursor>())?;
-        let write = address::<Cursor>(self.pages.write, size_of::<Cursor>())?;
-        // SAFETY: The constructor contract covers the backing layout and
-        // concurrent access. All Open calls finish before references exist.
+    fn parts(&mut self) -> Result<Parts<'_>, MappingError> {
+        let data = address::<AtomicU8>(&mut self.data, &mut self.memory, self.pages.data)?;
+        let read = address::<Cursor>(&mut self.read, &mut self.memory, self.pages.read)?;
+        let write = address::<Cursor>(&mut self.write, &mut self.memory, self.pages.write)?;
+        // SAFETY: Constructor contracts cover layout, exclusivity and lifetime.
+        // All Kernel calls finish before the references are constructed.
         Ok(unsafe {
             Parts {
                 bytes: slice::from_raw_parts(ptr::with_exposed_provenance(data), self.capacity),
@@ -67,82 +71,113 @@ impl Mapped {
         })
     }
 
-    fn close(&self, token: PendId) -> Result<(), MappingError> {
-        let cursor = address::<Cursor>(token, size_of::<Cursor>())?;
-        // SAFETY: Only this role's writable cursor is accessed, under the
-        // same mapping and atomic-access contract as parts().
+    fn close(&mut self, writer: bool) -> Result<(), MappingError> {
+        let (mapping, token) = if writer {
+            (&mut self.write, self.pages.write)
+        } else {
+            (&mut self.read, self.pages.read)
+        };
+        let cursor = address::<Cursor>(mapping, &mut self.memory, token)?;
+        // SAFETY: Only the role's writable cursor is accessed, with the same
+        // layout and mapping lifetime as parts().
         unsafe { (&*ptr::with_exposed_provenance::<Cursor>(cursor)).close() };
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<(), MappingError> {
+        for (mapping, token) in [
+            (&mut self.data, self.pages.data),
+            (&mut self.read, self.pages.read),
+            (&mut self.write, self.pages.write),
+        ] {
+            mapping
+                .finish(&mut self.memory)
+                .map_err(|error| MappingError::Access { token, error })?;
+        }
         Ok(())
     }
 }
 
-fn address<T>(token: PendId, bytes: usize) -> Result<usize, MappingError> {
-    let (address, span) =
-        share_view::open(token).map_err(|error| MappingError::Open { token, error })?;
-    let address = address.get();
-    if span < bytes
-        || address == 0
-        || !address.is_multiple_of(align_of::<T>())
-        || address.checked_add(bytes).is_none()
-    {
+impl<M: Memory> Drop for Mapped<M> {
+    fn drop(&mut self) {
+        let _ = self.finish();
+    }
+}
+
+fn address<T>(
+    mapping: &mut Mapping,
+    memory: &mut impl Memory,
+    token: PendId,
+) -> Result<usize, MappingError> {
+    let address = mapping
+        .address(memory)
+        .map_err(|error| MappingError::Access { token, error })?;
+    if !address.is_multiple_of(align_of::<T>()) {
         return Err(MappingError::InvalidMapping);
     }
     Ok(address)
 }
 
-/// The single consumer of a ring backed by Kernel Share Views.
-pub struct MappedReader(Mapped);
+/// The single consumer of a ring backed by Kernel Share sources.
+pub struct MappedReader<M: Memory>(Mapped<M>);
 
-impl MappedReader {
-    /// Binds Task-local Share Pends. The caller manages their retirement.
+impl<M: Memory> MappedReader<M> {
+    /// Binds Share sources and owns their separate CPU reservations.
     ///
     /// # Safety
     ///
-    /// Both endpoints must agree on capacity and the same three disjoint RAM
-    /// regions, reserved exclusively for this ring. The data holds initialized
-    /// atomic bytes. Each cursor starts at offset zero of its 64-byte-aligned
-    /// region, with two zeroed u64 atomics (position and close flag).
-    /// All access follows this layout and the ring's atomic protocol.
-    /// There must be only one reader and one writer, each with write access
-    /// to its own cursor. The reader needs read access to data and the write
-    /// cursor. Successful Open mappings must remain valid until the current
-    /// read or close finishes. Coordinate withdrawal at a quiescent boundary.
-    pub unsafe fn new(pages: Pages, capacity: usize) -> Result<Self, MappingError> {
-        Mapped::new(pages, capacity).map(Self)
+    /// Both endpoints must agree on capacity and three disjoint base-Cell RAM regions,
+    /// exclusively reserved for this ring. Data holds initialized atomic bytes.
+    /// Each cursor starts at offset zero of a 64-byte-aligned region, with two
+    /// zeroed u64 atomics (position and close flag). There is exactly one reader
+    /// and writer. The reader can write its cursor and read the other regions.
+    /// All accesses follow this layout and atomic protocol. Coordinate source
+    /// withdrawal, physical mutation and retirement at quiescent boundaries;
+    /// publications must remain valid until each read or close has finished.
+    pub unsafe fn new(memory: M, pages: Pages, capacity: usize) -> Result<Self, MappingError> {
+        Mapped::new(memory, pages, capacity, false).map(Self)
     }
 
     pub fn read(&mut self, out: &mut [u8]) -> Result<Read, MappingError> {
         self.0.parts()?.read(out).map_err(MappingError::Ring)
     }
 
-    /// Close explicitly before notifying the writer. Drop touches no mapping.
+    /// Publish the close flag before notifying the writer.
     pub fn close(&mut self) -> Result<(), MappingError> {
-        self.0.close(self.0.pages.read)
+        self.0.close(false)
+    }
+
+    /// Retire CPU reservations without returning the borrowed source Pends.
+    /// Call close first if the peer should observe a graceful shutdown.
+    pub fn finish(&mut self) -> Result<(), MappingError> {
+        self.0.finish()
     }
 }
 
-/// The single producer of a ring backed by Kernel Share Views.
-pub struct MappedWriter(Mapped);
+/// The single producer of a ring backed by Kernel Share sources.
+pub struct MappedWriter<M: Memory>(Mapped<M>);
 
-impl MappedWriter {
-    /// Binds Task-local Share Pends. The caller manages their retirement.
+impl<M: Memory> MappedWriter<M> {
+    /// Binds Share sources and owns their separate CPU reservations.
     ///
     /// # Safety
     ///
-    /// The same requirements as the reader constructor apply to layout,
-    /// exclusivity, atomic access and mapping lifetime. The writer needs
-    /// write access to data and the write cursor, and read access to the
-    /// read cursor.
-    pub unsafe fn new(pages: Pages, capacity: usize) -> Result<Self, MappingError> {
-        Mapped::new(pages, capacity).map(Self)
+    /// The reader constructor's layout, exclusivity and lifetime requirements
+    /// apply. The writer needs write access to data and its own cursor, and read
+    /// access to the reader cursor.
+    pub unsafe fn new(memory: M, pages: Pages, capacity: usize) -> Result<Self, MappingError> {
+        Mapped::new(memory, pages, capacity, true).map(Self)
     }
 
     pub fn write(&mut self, input: &[u8]) -> Result<Write, MappingError> {
         self.0.parts()?.write(input).map_err(MappingError::Ring)
     }
 
-    /// Close explicitly before notifying the reader. Drop touches no mapping.
     pub fn close(&mut self) -> Result<(), MappingError> {
-        self.0.close(self.0.pages.write)
+        self.0.close(true)
+    }
+
+    pub fn finish(&mut self) -> Result<(), MappingError> {
+        self.0.finish()
     }
 }

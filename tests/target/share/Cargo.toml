@@ -12,8 +12,13 @@ path = "main.rs"
 
 [dependencies]
 twine = { path = "../../.." }
-kernel-api = { git = "https://github.com/shuyra-arche/kernel.git", rev = "8b3586206a4795fc8289031887bb62d6d7598a69" }
-kernel-client = { git = "https://github.com/shuyra-arche/kernel.git", rev = "8b3586206a4795fc8289031887bb62d6d7598a69" }
+kernel-api = { git = "https://github.com/shuyra-arche/kernel.git", tag = "26.11.14-preview-Gamma" }
+kernel-client = { git = "https://github.com/shuyra-arche/kernel.git", tag = "26.11.14-preview-Gamma" }
+
+weave = { git = "https://github.com/shuyra-arche/weave.git", rev = "7a7d67fb3f190aeb43049d051b0972bcd53213bc", default-features = false }
 
 [profile.release]
+panic = "abort"
+
+[profile.dev]
 panic = "abort"

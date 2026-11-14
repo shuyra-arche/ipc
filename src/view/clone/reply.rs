@@ -19,6 +19,7 @@ use kernel_client::call::{clone_view, pend};
 use weave::{FrameReceiver, ReceivedFrame, correlation::ReplyReceiver};
 
 use super::{ReceiveError, Receiver, Sender};
+use crate::view::memory::Memory;
 
 const PUSH: Limits = Limits {
     operations: Operations::Clone(CloneRights::PUSH),
@@ -48,13 +49,13 @@ enum State {
 
 /// A fresh single-message queue associated with exactly one request.
 #[must_use = "finish the reply route to observe and retry cleanup failures"]
-pub struct Reply {
-    receiver: Receiver,
+pub struct Reply<M: Memory> {
+    receiver: Receiver<M>,
     state: State,
 }
 
-impl Reply {
-    pub fn create(license: PendId, max_len: usize) -> Result<Self, Error<CloneFail>> {
+impl<M: Memory> Reply<M> {
+    pub fn create(license: PendId, max_len: usize, memory: M) -> Result<Self, Error<CloneFail>> {
         let limits = CloneLimits {
             max_len,
             max_messages: 1,
@@ -62,7 +63,7 @@ impl Reply {
         };
         let token = clone_view::create(license, Mark::NONE, limits)?;
         Ok(Self {
-            receiver: Receiver::new(token),
+            receiver: Receiver::new(token, memory),
             state: State::Local,
         })
     }
@@ -105,7 +106,7 @@ impl Reply {
     }
 }
 
-impl FrameReceiver for Reply {
+impl<M: Memory> FrameReceiver for Reply<M> {
     type Error = ReplyError;
     type Metadata = TaskId;
 
@@ -125,13 +126,11 @@ impl FrameReceiver for Reply {
     }
 }
 
-impl ReplyReceiver for Reply {}
+impl<M: Memory> ReplyReceiver for Reply<M> {}
 
-impl Drop for Reply {
+impl<M: Memory> Drop for Reply<M> {
     fn drop(&mut self) {
-        if !matches!(self.state, State::Finished) {
-            let _ = pend::return_(self.receiver.token);
-        }
+        let _ = self.finish();
     }
 }
 

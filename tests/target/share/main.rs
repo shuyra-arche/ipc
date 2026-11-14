@@ -5,7 +5,7 @@ mod fixture;
 
 use core::fmt::Write as _;
 use kernel_api::{
-    abi::reply::SignReply,
+    abi::call::sign::SignReply,
     model::{
         identity::PendId,
         modifiable::Modifiable,
@@ -15,7 +15,7 @@ use kernel_api::{
         wait::Wait,
     },
 };
-use kernel_client::call::{pend, room, share_view, sign, unit};
+use kernel_client::call::{clone_view, pend, room, sign, unit};
 use twine::{
     sign::Wake,
     view::share::{MappedReader, MappedWriter, MappingError, Pages, Read, Write},
@@ -41,21 +41,23 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 #[unsafe(no_mangle)]
 extern "C" fn start() -> ! {
     let license = fixture::license();
-    let code = fixture::Code::new(license);
+    assert_eq!(kernel_api::abi::VERSION, 11);
+    clone_roundtrip(license);
+    let code = fixture::Code::new();
     for mode in [Mode::Drain, Mode::Revoke, Mode::Exit] {
         run(license, &code, mode);
     }
-    code.finish();
     writeln!(
         Console,
-        "PASS twine-share teams=2 wrap=1 drain=1 revoke=1 exit=1"
+        "PASS twine-share abi=11 clone=1 reply=1 teams=2 wrap=1 drain=1 revoke=1 exit=1"
     )
     .unwrap();
     exit(0)
 }
 
 fn run(license: PendId, code: &fixture::Code, mode: Mode) {
-    let (team, target, whole, mapping) = code.spawn(mode, reader);
+    let child = code.spawn(license, mode, reader);
+    let (team, target) = (child.team, child.target);
     let UnitTarget::Task(task) = target else {
         unreachable!();
     };
@@ -63,11 +65,10 @@ fn run(license: PendId, code: &fixture::Code, mode: Mode) {
     assert_eq!(inspect(UnitQuery::Target(target)).team, team);
 
     let slots = [(); 3].map(|()| fixture::allocate(license, 1));
-    let [data, read, write] =
-        slots.map(|slot| share_view::create(license, slot, Modifiable::Yes).unwrap());
+    let [data, read, write] = slots.map(|slot| fixture::share(license, slot, Modifiable::Yes));
     let incoming = sign::create(license).unwrap();
     let outgoing = sign::create(license).unwrap();
-    let rights = Operations::Share(ShareRights::OPEN | ShareRights::SHUT);
+    let rights = Operations::Share(ShareRights::ASSOCIATE);
     let data_grant = fixture::grant(data, Some(task), rights, Modifiable::No);
     fixture::grant(read, Some(task), rights, Modifiable::Yes);
     fixture::grant(write, Some(task), rights, Modifiable::No);
@@ -91,6 +92,7 @@ fn run(license: PendId, code: &fixture::Code, mode: Mode) {
     // this test. The child receives the complementary permissions.
     let mut writer = unsafe {
         MappedWriter::new(
+            fixture::context(fixture::space()),
             Pages {
                 data,
                 read: local_read,
@@ -138,7 +140,8 @@ fn run(license: PendId, code: &fixture::Code, mode: Mode) {
         assert_eq!(ring(|| writer.write(b"h")).unwrap(), Write::Pending);
     }
 
-    fixture::reap(target, team, whole, mapping);
+    ring(|| writer.finish()).unwrap();
+    fixture::reap(&child);
     for token in [incoming, outgoing] {
         sign::delete(token).unwrap();
         retry(|| pend::return_(token));
@@ -154,11 +157,18 @@ fn run(license: PendId, code: &fixture::Code, mode: Mode) {
 extern "C" fn reader(args: usize, count: usize) -> ! {
     assert_eq!(count, 1);
     let mode = unsafe { (args as *const usize).read() };
-    let [data, read, write, incoming, outgoing] = fixture::collect();
+    let [space, data, read, write, incoming, outgoing] = fixture::collect();
     let mut wake = Wake::new(incoming, outgoing);
     // SAFETY: The parent exclusively allocates and shares these zeroed RAM
     // regions. It waits for this Task to block before revoking in Revoke mode.
-    let mut reader = unsafe { MappedReader::new(Pages { data, read, write }, CAPACITY).unwrap() };
+    let mut reader = unsafe {
+        MappedReader::new(
+            fixture::context(space),
+            Pages { data, read, write },
+            CAPACITY,
+        )
+        .unwrap()
+    };
     triggered(&mut wake);
     let mut out = [0; 4];
     assert_eq!(ring(|| reader.read(&mut out[..3])).unwrap(), Read::Bytes(3));
@@ -177,7 +187,7 @@ extern "C" fn reader(args: usize, count: usize) -> ! {
         ));
         assert!(matches!(
             ring(|| reader.read(&mut out)),
-            Err(MappingError::Open { token, .. }) if token == data
+            Err(MappingError::Access { token, .. }) if token == data
         ));
         exit(11)
     }
@@ -206,4 +216,51 @@ extern "C" fn reader(args: usize, count: usize) -> ! {
 fn triggered(wake: &mut Wake) {
     let reply = wake.wait(deadline()).unwrap();
     assert!(matches!(reply, SignReply::Triggered { .. }), "{reply:?}");
+}
+
+fn clone_roundtrip(license: PendId) {
+    use kernel_api::model::{clone_view::CloneLimits, identity::Mark};
+    use twine::view::clone::{Receiver, Reply, Sender};
+    use weave::{FrameReceiver, FrameSender};
+    let mut memory = fixture::context(fixture::space());
+    let queue = clone_view::create(
+        license,
+        Mark::NONE,
+        CloneLimits {
+            max_len: 5000,
+            max_messages: 2,
+            max_bytes: 10000,
+        },
+    )
+    .unwrap();
+    let mut sender = Sender::new(queue);
+    let bytes = [0x5a; 5000];
+    sender.send(&bytes).unwrap();
+    let mut receiver = Receiver::new(queue, &mut memory);
+    assert_eq!(receiver.peek().unwrap().0, bytes.len());
+    let mut payload = receiver.pull(bytes.len()).unwrap();
+    // A delivery survives the originating queue's closure.
+    clone_view::delete(queue).unwrap();
+    let mut out = [0; 5000];
+    assert_eq!(payload.copy(&mut out, receiver.memory()).unwrap(), 5000);
+    assert_eq!(out, bytes);
+    payload.shut(receiver.memory()).unwrap();
+    assert_eq!(payload.copy(&mut out, receiver.memory()).unwrap(), 5000);
+    payload.finish(receiver.memory()).unwrap();
+    drop(receiver);
+    retry(|| pend::return_(queue));
+
+    let UnitTarget::Task(caller) = inspect(UnitQuery::Caller).target else {
+        panic!("caller");
+    };
+    let mut reply = Reply::create(license, 32, memory).unwrap();
+    let token = reply.grant(caller).unwrap();
+    let mut sender = Sender::reply(token, caller).unwrap();
+    sender.send(b"native-reply").unwrap();
+    let mut out = [0; 32];
+    let frame = reply.receive(&mut out).unwrap();
+    assert_eq!(&out[..frame.len], b"native-reply");
+    assert_eq!(frame.metadata, caller);
+    assert!(reply.receive(&mut out).is_err());
+    reply.finish().unwrap();
 }
