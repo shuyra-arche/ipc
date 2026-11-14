@@ -8,9 +8,10 @@ pub use reply::{Reply, ReplyError};
 
 use core::marker::PhantomData;
 
+use crate::view::memory::{MappingError, Memory};
 use erra::Error;
 use kernel_api::{
-    abi::call::{clone_view::CloneFail, pend::PendFail, share_view::ShareFail},
+    abi::call::{clone_view::CloneFail, pend::PendFail},
     address::VirtAddr,
     model::{
         clone_view::CloneCondition,
@@ -65,33 +66,38 @@ impl FrameSender for Sender {
 #[derive(Debug)]
 pub enum ReceiveError {
     Pull(Error<CloneFail>),
-    Open(Error<ShareFail>),
-    Shut(Error<ShareFail>),
+    Mapping(MappingError),
     Return(Error<PendFail>),
     Capacity { required: usize },
-    InvalidMapping,
     Returning,
 }
 
 /// Borrows the caller's pull authority and retains unfinished deliveries.
-pub struct Receiver {
+pub struct Receiver<M: Memory> {
+    memory: M,
     token: PendId,
     pending: Option<Payload>,
     task: PhantomData<*mut ()>,
 }
 
-impl Receiver {
-    pub fn new(token: PendId) -> Self {
+impl<M: Memory> Receiver<M> {
+    pub fn new(token: PendId, memory: M) -> Self {
         Self {
+            memory,
             token,
             pending: None,
             task: PhantomData,
         }
     }
 
+    /// Borrow the Task context to copy or finish a manually pulled payload.
+    pub fn memory(&mut self) -> &mut M {
+        &mut self.memory
+    }
+
     /// A failed Pull leaves the queue unchanged, including when max_len is too
     /// small. After a successful Pull, the caller owns the payload cleanup.
-    /// A delivery retained after a busy FrameReceiver Open is pulled first.
+    /// A delivery retained after an unfinished FrameReceiver mapping is pulled first.
     pub fn pull(&mut self, max_len: usize) -> Result<Payload, ReceiveError> {
         self.settle()?;
         if let Some(payload) = self.pending.take() {
@@ -129,33 +135,41 @@ impl Receiver {
     }
 
     /// Return a retained delivery without pulling or dispatching another frame.
-    /// Use when abandoning a receive after Open Busy, or shutting down a service.
+    /// Use when abandoning an unfinished mapping or shutting down a service.
     /// Failure retains the delivery for retry. The borrowed queue stays open.
     pub fn discard(&mut self) -> Result<(), ReceiveError> {
         if let Some(payload) = self.pending.as_mut() {
-            payload.retire()?;
+            payload.retire(&mut self.memory)?;
             self.pending = None;
         }
         Ok(())
     }
 }
 
-impl FrameReceiver for Receiver {
+impl<M: Memory> Drop for Receiver<M> {
+    fn drop(&mut self) {
+        let _ = self.discard();
+    }
+}
+
+impl<M: Memory> FrameReceiver for Receiver<M> {
     type Error = ReceiveError;
     type Metadata = TaskId;
 
-    /// A capacity failure retains the frame. A busy Open retains the delivery
-    /// for another receive. Once a frame is copied, it is delivered even if
+    /// A capacity failure retains the frame. Busy or uncertain mappings retain
+    /// the delivery for another receive. Once copied, it is delivered even if
     /// Return needs more work. A later Pull settles that cleanup first.
     fn receive(&mut self, out: &mut [u8]) -> Result<ReceivedFrame<TaskId>, Self::Error> {
         let mut payload = self.pull(out.len())?;
         let metadata = payload.sender();
-        let result = payload.copy(out).map(|len| ReceivedFrame { len, metadata });
-        self.pending = if matches!(&result, Err(ReceiveError::Open(error)) if error.source.is_busy())
+        let result = payload
+            .copy(out, &mut self.memory)
+            .map(|len| ReceivedFrame { len, metadata });
+        self.pending = if matches!(&result, Err(ReceiveError::Mapping(error)) if error.is_busy() || matches!(error, MappingError::Transport(_) | MappingError::Uncertain { .. }))
         {
             Some(payload)
         } else {
-            payload.finish().err().map(|(payload, _)| payload)
+            payload.finish(&mut self.memory).err().map(|_| payload)
         };
         result
     }
