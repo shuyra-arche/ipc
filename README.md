@@ -13,11 +13,12 @@ Twine 是 Shuyra 的 `no_std` 通信库，使用 Kernel ABI v11 并适配
 ## 原生内存上下文
 
 API、Client 和测试镜像的 Server 固定到 Kernel
-[`26.11.14-preview-Delta`](https://github.com/shuyra-arche/kernel/releases/tag/26.11.14-preview-Delta)，
-对应提交 `b2eb37e2af134e4bb4248df454c437b06c1f93c0`。
+[#180 的已发布候选](https://github.com/shuyra-arche/kernel/pull/180)，
+对应提交 `0ee104ddf94ca74a18135bf216b888a2437bd6f8`。
 所有 manifest 使用该完整 `rev`，与 Vanllia 使用同一个 Cargo Git 来源身份；
-Delta Tag 仅用于标识发布，不与 `tag` 依赖混用。该版本包含 Kernel #175 的
-原生 Nest 创建持锁修复，ABI/Ledger 仍为 11/11、Capsule 格式仍为 2。
+本次更新为待合并提供方的精确 pin，不代表新发布。它在 Delta 的基础上补全
+DTB/initrd 的受管只读来源授权，保留 Kernel #175 的原生 Nest 创建修复。
+ABI/Ledger 仍为 11/11、Capsule 格式仍为 2。
 必须重建匹配的 Kernel、Capsule 和 Ledger；不再使用 `memory-v11` feature。
 
 ABI v11 的 Share 只提供逻辑来源，旧 `Open/Shut` 调用已退役。
@@ -121,7 +122,7 @@ cargo build --locked --target riscv64gc-unknown-none-elf
 cargo build --locked --release --target riscv64gc-unknown-none-elf
 ```
 
-真实 RV64 测试使用同一 Delta 修订的 RAM-only 测试平台，Server 构建另外需要
+真实 RV64 测试使用同一 Kernel 修订的 RAM-only 测试平台，Server 构建另外需要
 nightly。准备 QEMU 10.0.x 和支持 DBCN 的 OpenSBI，然后运行：
 
 ```sh
