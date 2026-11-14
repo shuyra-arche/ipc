@@ -13,8 +13,11 @@ Twine 是 Shuyra 的 `no_std` 通信库，使用 Kernel ABI v11 并适配
 ## 原生内存上下文
 
 API、Client 和测试镜像的 Server 固定到 Kernel
-[`26.11.14-preview-Gamma`](https://github.com/shuyra-arche/kernel/releases/tag/26.11.14-preview-Gamma)，
-对应提交 `9a35dd5420474ebe75a6b5f3e4589a398745e32c`。
+[`26.11.14-preview-Delta`](https://github.com/shuyra-arche/kernel/releases/tag/26.11.14-preview-Delta)，
+对应提交 `b2eb37e2af134e4bb4248df454c437b06c1f93c0`。
+所有 manifest 使用该完整 `rev`，与 Vanllia 使用同一个 Cargo Git 来源身份；
+Delta Tag 仅用于标识发布，不与 `tag` 依赖混用。该版本包含 Kernel #175 的
+原生 Nest 创建持锁修复，ABI/Ledger 仍为 11/11、Capsule 格式仍为 2。
 必须重建匹配的 Kernel、Capsule 和 Ledger；不再使用 `memory-v11` feature。
 
 ABI v11 的 Share 只提供逻辑来源，旧 `Open/Shut` 调用已退役。
@@ -118,7 +121,7 @@ cargo build --locked --target riscv64gc-unknown-none-elf
 cargo build --locked --release --target riscv64gc-unknown-none-elf
 ```
 
-真实 RV64 测试使用同一 Gamma tag 的 RAM-only 测试平台，Server 构建另外需要
+真实 RV64 测试使用同一 Delta 修订的 RAM-only 测试平台，Server 构建另外需要
 nightly。准备 QEMU 10.0.x 和支持 DBCN 的 OpenSBI，然后运行：
 
 ```sh
@@ -133,7 +136,7 @@ python3 tests/target/share/run.py --profile debug
 测试覆盖跨页 Clone 载荷、队列关闭后读取、释放后重新映射、单次回复、两个独立
 Team 的满环背压、回绕、排空、等待期间的撤销及对端退出。
 `tests/target/share/target/evidence/` 保存镜像校验、命令、串口和退出结果。
-Gamma 的 native 内存契约只接受此处的单 Hart 发布；旧四 Hart 用例不属于本次
+Delta 的 native 内存契约只接受此处的单 Hart 发布；旧四 Hart 用例不属于本次
 ABI v11 验收。未声明 SMP 或物理硬件验证。
 
 Twine 0.4 是从 0.3 / ABI v10 的不兼容迁移：接收、回复及共享环需要显式传入

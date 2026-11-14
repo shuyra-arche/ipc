@@ -12,7 +12,7 @@ import time
 PAGE = 4096
 TARGET = "riscv64gc-unknown-none-elf"
 PASS = b"PASS twine-share abi=11 clone=1 reply=1 teams=2 wrap=1 drain=1 revoke=1 exit=1"
-TAG = "26.11.14-preview-Gamma"
+TAG = "26.11.14-preview-Delta"
 
 
 def initrd(elf: bytes) -> bytes:
@@ -69,11 +69,11 @@ def main() -> None:
     qemu = os.environ.get("QEMU_RISCV64", "qemu-system-riscv64")
     version = subprocess.check_output([qemu, "--version"], text=True).splitlines()[0]
     assert "version 10.0." in version, "This fixture is reviewed for QEMU 10.0.x"
-    # Gamma qualifies local-Hart executable publication; SMP is not admitted.
+    # Delta qualifies local-Hart executable publication; SMP is not admitted.
     command = [qemu, "-accel", "tcg,thread=single", "-M", "virt", "-cpu", "rv64", "-m", "128M", "-smp", "1",
                "-bios", firmware, "-kernel", kernel, "-initrd", image,
                "-nographic", "-monitor", "none", "-nic", "none"]
-    metadata = {"expected_kernel_tag": TAG, "built_kernel_sha": None if args.kernel else "9a35dd5420474ebe75a6b5f3e4589a398745e32c",
+    metadata = {"expected_kernel_tag": TAG, "built_kernel_sha": None if args.kernel else "b2eb37e2af134e4bb4248df454c437b06c1f93c0",
                 "qemu": version, "command": [str(value) for value in command],
                 "guest_rustc": subprocess.check_output(["rustc", "-Vv"], text=True),
                 "platform_toolchain": "nightly-2026-11-14", "external_image": bool(args.kernel),
